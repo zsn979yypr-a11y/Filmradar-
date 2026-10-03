@@ -66,6 +66,15 @@ input[type=text],input[type=search],input[type=number],select{font:inherit;font-
 .plot{margin:0;font-size:14px;max-width:65ch;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
 .actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 a.lnk{color:var(--accent);font-size:13px;font-weight:500}
+.obanner{border-radius:10px;padding:12px 14px;font-size:14px;border:1px solid var(--accent);background:var(--surface)}
+.obanner b{display:block;margin-bottom:2px}
+.ratings{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px;margin:2px 0}
+.rbox{border:1px solid var(--line);border-radius:8px;padding:7px 9px;display:flex;flex-direction:column;gap:1px;min-width:0}
+.rbox .k{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.rbox .v{font-family:var(--f-mono);font-size:18px;font-weight:600}
+.rbox .n{font-size:11.5px;color:var(--muted)}
+.rbox.imdb .v{color:var(--imdb)} .rbox.rt .v{color:var(--rt)}
+.rnote{font-size:12px;color:var(--muted)}
 .empty,.err{background:var(--surface);border:1px dashed var(--line);border-radius:10px;padding:20px 16px;color:var(--muted)}
 .err{border-style:solid;border-color:var(--accent);color:var(--ink)}
 details summary{cursor:pointer;font-weight:600}
@@ -144,8 +153,13 @@ footer{font-size:12px;color:var(--muted)}
         <input type="range" id="gRt" min="0" max="100" step="5">
       </div>
     </div>
+    <div class="row">
+      <label class="lbl" for="gVotes">IMDb mindestens Stimmen <output id="oGVotes"></output></label>
+      <input type="range" id="gVotes" min="0" max="200000" step="5000">
+    </div>
     <div class="sub" id="omdbHint"></div>
   </section>
+  <div class="obanner" id="omdbBanner" hidden></div>
 
   <!-- Heute Abend -->
   <section class="panel" id="tonightPanel" hidden>
@@ -229,7 +243,7 @@ footer{font-size:12px;color:var(--muted)}
   <div class="list" id="list"></div>
   <div class="actions"><button class="btn ghost" id="more" hidden>Mehr laden</button></div>
 
-  <footer>Daten: TMDB (Verfügbarkeit in Deutschland, bereitgestellt von JustWatch) und OMDb (IMDb, Rotten Tomatoes). Dieses Produkt nutzt die TMDB-API, ist aber nicht von TMDB unterstützt oder zertifiziert.</footer>
+  <footer>Daten: TMDB (Verfügbarkeit in Deutschland, bereitgestellt von JustWatch) und OMDb (IMDb, Rotten Tomatoes, Metacritic). Dieses Produkt nutzt die TMDB-API, ist aber nicht von TMDB unterstützt oder zertifiziert.</footer>
 </div>
 
 <div class="sheet" id="sheet" hidden>
@@ -250,7 +264,7 @@ const num = n => (Math.round((n || 0) * 10) / 10).toFixed(1).replace(".", ",");
 const WAYS = [["flatrate","Im Abo"],["free","Gratis"],["ads","Gratis mit Werbung"],["rent","Leihen"],["buy","Kaufen"]];
 const ALL_WAYS = ["flatrate","free","ads","rent","buy"];
 const ABO_WAYS = ["flatrate","free","ads"];
-const DEFAULTS = { q:"", ways:ALL_WAYS.slice(), prov:[], genres:[], imdb:7.0, votes:500, from:"", sort:"popularity.desc", hideSeen:true, recWays:ALL_WAYS.slice(), deep:true, tMood:"spannend", tTime:"mittel", tWay:"abo", gMin:7.0, gImdb:0, gRt:0 };
+const DEFAULTS = { q:"", ways:ALL_WAYS.slice(), prov:[], genres:[], imdb:7.0, votes:500, from:"", sort:"popularity.desc", hideSeen:true, recWays:ALL_WAYS.slice(), deep:true, tMood:"spannend", tTime:"mittel", tWay:"abo", gMin:7.0, gImdb:0, gRt:0, gVotes:0 };
 const START_FAVS = [["Companion",2025],["Terminator 2",1991],["Upgrade",2018],["District 9",2009],["Inception",2010],["The Creator",2023],["Mortal Engines",2018],["Arrival",2016],["Tetris",2023],["The Social Network",2010]];
 const MOODS = [["spannend","Spannend",[53,9648,80]],["kopf","Sci-Fi & Kopfkino",[878]],["action","Action",[28,12]],["lachen","Was zum Lachen",[35]],["gefuehl","Gefühl & Drama",[18,10749]],["grusel","Gruseln",[27]],["wahr","Wahre Geschichten",[36,99]],["egal","Überrasch mich",[]]];
 const TIMES = [["kurz","Unter 100 Min.",100],["mittel","Bis 2 Std.",120],["lang","Egal",0]];
@@ -262,6 +276,7 @@ let f = { ...DEFAULTS, ...LS.get("fr-filter", {}) };
 let seen = new Set(LS.get("fr-seen", []));
 let taste = LS.get("fr-taste", { liked: [], disliked: [] });
 let omdbCache = LS.get("fr-omdb", {});
+let imdbIds = LS.get("fr-imdbid", {});
 let mode = LS.get("fr-mode", "tonight");
 let page = 0, totalPages = 0, totalResults = 0, providers = [], allProviders = [], genres = [], loading = false, shownCount = 0;
 let recQueue = [], recPos = 0, recCache = {}, provCache = {}, films = {};
@@ -286,20 +301,81 @@ async function tmdb(path, params = {}) {
   if (!r.ok) throw new Error("http");
   return r.json();
 }
-async function omdb(imdbId) {
-  if (!keys.omdb || !imdbId) return null;
-  const hit = omdbCache[imdbId];
-  if (hit && Date.now() - hit.t < 7 * 864e5) return hit;
-  try {
-    const r = await fetch(`https://www.omdbapi.com/?i=${imdbId}&apikey=${encodeURIComponent(keys.omdb)}`);
-    const j = await r.json();
-    if (j.Response === "False") return null;
-    const rtE = (j.Ratings || []).find(x => (x.Source || "").includes("Rotten"));
-    const v = { t: Date.now(), imdb: parseFloat(j.imdbRating) || null, rt: rtE ? parseInt(rtE.Value) : null };
-    omdbCache[imdbId] = v; LS.set("fr-omdb", omdbCache);
-    return v;
-  } catch (e) { return null }
+// ---------- OMDb: sparsam, mit Tageszähler und klaren Fehlermeldungen ----------
+const OMDB_DAY_LIMIT = 1000;
+const today = () => new Date().toISOString().slice(0, 10);
+let omdbState = LS.get("fr-omdbstate", { day: "", n: 0, limit: false, bad: false });
+const omdbInflight = {};
+function omdbSaveState() { LS.set("fr-omdbstate", omdbState); }
+function omdbRoll() { if (omdbState.day !== today()) { omdbState = { day: today(), n: 0, limit: false, bad: omdbState.bad }; omdbSaveState(); } }
+function omdbFresh(hit) {
+  if (!hit) return false;
+  const age = Date.now() - hit.t, y = +hit.y || 0, cy = new Date().getFullYear();
+  if (hit.nf) return age < 14 * 864e5;                 // nicht gefunden: 2 Wochen merken
+  if (y && y >= cy - 1) return age < 3 * 864e5;        // neue Filme: Werte ändern sich noch, alle 3 Tage
+  return age < 45 * 864e5;                             // ältere Filme: 45 Tage
 }
+function omdbCached(imdbId) { const h = imdbId && omdbCache[imdbId]; return h && !h.nf ? h : null; }
+function omdbProblem() {
+  if (!keys.omdb) return "nokey";
+  omdbRoll();
+  if (omdbState.bad) return "bad";
+  if (omdbState.limit || omdbState.n >= OMDB_DAY_LIMIT) return "limit";
+  return null;
+}
+function omdbBanner() {
+  const p = omdbProblem(), el = $("omdbBanner"); if (!el) return;
+  const msg = {
+    nokey: "<b>IMDb- und Rotten-Tomatoes-Werte fehlen</b>Es ist kein OMDb-Schlüssel eingetragen. Unter „Mein Geschmack“ → „Schlüssel ändern“ eintragen.",
+    bad: "<b>Der OMDb-Schlüssel wird nicht akzeptiert</b>Deshalb fehlen IMDb- und RT-Werte. Prüfe, ob du in der OMDb-Mail den Aktivierungslink angetippt hast, und trage unter „Mein Geschmack“ → „Schlüssel ändern“ nur die 8 Zeichen des Schlüssels ein.",
+    limit: "<b>Tageslimit bei OMDb erreicht</b>Der kostenlose OMDb-Schlüssel erlaubt 1.000 Abfragen pro Tag. Bereits geladene Werte werden weiter angezeigt; neue IMDb- und RT-Werte gibt es ab morgen wieder."
+  }[p];
+  el.hidden = !msg; if (msg) el.innerHTML = msg;
+}
+async function omdb(imdbId) {
+  if (!imdbId) return null;
+  const hit = omdbCache[imdbId];
+  if (omdbFresh(hit)) return hit.nf ? null : hit;
+  if (omdbProblem()) { omdbBanner(); return hit && !hit.nf ? hit : null; }   // lieber alter Wert als gar keiner
+  if (omdbInflight[imdbId]) return omdbInflight[imdbId];
+  const job = (async () => {
+    try {
+      omdbState.n++; omdbSaveState();
+      const r = await fetch(`https://www.omdbapi.com/?i=${imdbId}&apikey=${encodeURIComponent(keys.omdb)}`);
+      if (r.status === 401) { omdbState.bad = true; omdbSaveState(); omdbBanner(); return hit && !hit.nf ? hit : null; }
+      const j = await r.json();
+      if (j.Response === "False") {
+        const e = String(j.Error || "");
+        if (/limit/i.test(e)) { omdbState.limit = true; omdbSaveState(); omdbBanner(); return hit && !hit.nf ? hit : null; }
+        if (/key/i.test(e)) { omdbState.bad = true; omdbSaveState(); omdbBanner(); return hit && !hit.nf ? hit : null; }
+        omdbCache[imdbId] = { t: Date.now(), nf: true }; LS.set("fr-omdb", omdbCache);
+        return null;
+      }
+      if (omdbState.bad) { omdbState.bad = false; omdbSaveState(); omdbBanner(); }
+      const rtE = (j.Ratings || []).find(x => (x.Source || "").includes("Rotten"));
+      const votes = parseInt(String(j.imdbVotes || "").replace(/[^\d]/g, ""), 10);
+      const v = { t: Date.now(), y: parseInt(j.Year) || 0, imdb: parseFloat(j.imdbRating) || null, votes: votes || null,
+                  rt: rtE ? parseInt(rtE.Value) : null, meta: parseInt(j.Metascore) || null };
+      omdbCache[imdbId] = v; LS.set("fr-omdb", omdbCache);
+      return v;
+    } catch (e) { return hit && !hit.nf ? hit : null; }
+    finally { delete omdbInflight[imdbId]; }
+  })();
+  omdbInflight[imdbId] = job;
+  return job;
+}
+async function omdbTest() {
+  if (!keys.omdb) return;
+  try {
+    const r = await fetch(`https://www.omdbapi.com/?i=tt0133093&apikey=${encodeURIComponent(keys.omdb)}`);
+    omdbRoll(); omdbState.n++;
+    if (r.status === 401) omdbState.bad = true;
+    else { const j = await r.json(); omdbState.bad = j.Response === "False" && /key/i.test(j.Error || ""); if (j.Response === "False" && /limit/i.test(j.Error || "")) omdbState.limit = true; }
+    omdbSaveState();
+  } catch (e) {}
+  omdbBanner(); chipsRender();
+}
+const kfmt = n => n >= 1e6 ? (n / 1e6).toFixed(1).replace(".", ",") + " Mio." : n >= 10000 ? Math.round(n / 1000).toLocaleString("de-DE") + " Tsd." : n.toLocaleString("de-DE");
 async function providersDE(id) {
   if (provCache[id] !== undefined) return provCache[id];
   const r = await tmdb(`/movie/${id}/watch/providers`);
@@ -345,7 +421,11 @@ function chipsRender() {
   $("minHint").textContent = f.gMin >= 7.5 ? "Nur Spitzenfilme. Es werden weniger Vorschläge." : f.gMin >= 6.8 ? "Gut bis sehr gut bewertet." : "Auch Durchschnittliches wird angezeigt.";
   $("gImdb").value = f.gImdb; $("oGImdb").textContent = f.gImdb > 0 ? num(f.gImdb) : "egal";
   $("gRt").value = f.gRt; $("oGRt").textContent = f.gRt > 0 ? f.gRt + " %" : "egal";
-  $("omdbHint").textContent = keys.omdb ? "IMDb und RT werden nach und nach nachgeladen. Filme darunter verschwinden dann automatisch, Filme ohne Wert bleiben sichtbar." : "Für IMDb und RT unter „Mein Geschmack“ den OMDb-Schlüssel eintragen.";
+  $("gVotes").value = f.gVotes || 0; $("oGVotes").textContent = f.gVotes > 0 ? f.gVotes.toLocaleString("de-DE") : "egal";
+  omdbRoll();
+  $("omdbHint").textContent = keys.omdb
+    ? `IMDb und RT kommen von OMDb (kostenlos 1.000 Abfragen pro Tag; heute genutzt: ${omdbState.n.toLocaleString("de-DE")}). Werte werden gespeichert und nicht doppelt abgefragt. Ist ein IMDb- oder RT-Regler gesetzt, blendet die App Filme darunter aus; Filme ohne Wert bleiben sichtbar.`
+    : "Für IMDb und RT unter „Mein Geschmack“ den OMDb-Schlüssel eintragen.";
   $("tMood").innerHTML = one(MOODS, f.tMood, "data-tmood");
   $("tTime").innerHTML = one(TIMES, f.tTime, "data-ttime");
   $("tWay").innerHTML = one(TWAYS, f.tWay, "data-tway");
@@ -387,7 +467,7 @@ function cardHtml(m, why, idPrefix = "m") {
       ${why ? `<div class="why">${esc(why)}</div>` : ""}
       <h2 class="title">${esc(m.title)}</h2>
       <div class="meta">${[year, m._runtime ? `${m._runtime} Min.` : "", m.original_title && m.original_title !== m.title ? m.original_title : ""].filter(Boolean).map(esc).join(" · ")}</div>
-      <div class="scores"><span class="s-imdb">IMDb <b data-imdb>…</b></span><span class="s-rt">RT <b data-rt>…</b></span><span>TMDB <b>${num(m.vote_average)}</b></span></div>
+      <div class="ratings" data-ratings>${ratingsHtml(m, omdbCached(imdbIds[m.id]), "load")}</div>
       ${m.overview ? `<p class="plot">${esc(m.overview)}</p>` : ""}
       <dl class="prov" data-prov>${m._de !== undefined ? provBlock(m._de) : "<dt>Wo</dt><dd>lädt …</dd>"}</dl>
       ${m._trailer ? `<div class="actions"><a class="btn small" target="_blank" rel="noopener" href="https://www.youtube.com/watch?v=${encodeURIComponent(m._trailer)}">▶ Trailer ansehen</a></div>` : ""}
@@ -407,18 +487,26 @@ function tileHtml(m, sub) {
   </div>`;
 }
 
+function ratingsHtml(m, o, state) {
+  const prob = omdbProblem();
+  const miss = state === "load" ? "…" : "–";
+  const why = state === "load" ? "" : !o ? (prob === "limit" ? "Tageslimit OMDb" : prob === "bad" ? "Schlüssel ungültig" : prob === "nokey" ? "Schlüssel fehlt" : "kein Eintrag") : "";
+  const box = (cls, k, v, n) => `<div class="rbox ${cls}"><span class="k">${k}</span><span class="v">${v}</span><span class="n">${n || "&nbsp;"}</span></div>`;
+  return box("imdb", "IMDb", o && o.imdb != null ? num(o.imdb) : miss, o && o.votes ? kfmt(o.votes) + " Stimmen" : why)
+    + box("rt", "Rotten Tomatoes", o && o.rt != null ? o.rt + " %" : miss, o && o.rt != null ? "Kritiker" : (o ? "keine Kritiken" : why))
+    + (o && o.meta ? box("", "Metacritic", o.meta, "Kritiker") : "")
+    + box("", "TMDB", num(m.vote_average), m.vote_count ? kfmt(m.vote_count) + " Stimmen" : "");
+}
 async function fillScores(el, m) {
   try {
-    const ext = await tmdb(`/movie/${m.id}/external_ids`);
-    const o = await omdb(ext.imdb_id);
-    const i = el.querySelector("[data-imdb]"), r = el.querySelector("[data-rt]");
-    if (i) i.textContent = o && o.imdb != null ? num(o.imdb) : (keys.omdb ? "–" : "Schlüssel fehlt");
-    if (r) r.textContent = o && o.rt != null ? o.rt + " %" : "–";
+    const id = await imdbIdFor(m.id);
+    const o = id ? await omdb(id) : null;
+    const box = el.querySelector("[data-ratings]");
+    if (box) box.innerHTML = ratingsHtml(m, o, id ? "done" : "noid");
     if (el.id && el.id[0] === "m" && failsOmdb(o) && mode === "rec") el.remove();
     return o;
-  } catch (e) { return null }
+  } catch (e) { const box = el.querySelector("[data-ratings]"); if (box) box.innerHTML = ratingsHtml(m, null, "done"); return null }
 }
-
 async function enrich(m, imdbMin) {
   const el = $("m" + m.id); if (!el) return;
   try {
@@ -649,7 +737,7 @@ async function showTonight() {
 }
 async function renderTonight(ok, my) {
   // Mit IMDb-/RT-Reglern: die Top 3 nur aus Filmen nehmen, die die Werte wirklich schaffen
-  if (keys.omdb && (f.gImdb > 0 || f.gRt > 0)) {
+  if (keys.omdb && omdbFilterOn()) {
     const pass = [], rest = [];
     for (const e of ok) {
       if (pass.length >= 3) { rest.push(e); continue; }
@@ -758,25 +846,29 @@ async function showHot() {
 }
 
 // ---------- IMDb- und RT-Filter für Plakate ----------
-let imdbIds = LS.get("fr-imdbid", {});
 async function imdbIdFor(id) {
   if (imdbIds[id] !== undefined) return imdbIds[id];
   const ext = await tmdb(`/movie/${id}/external_ids`);
   imdbIds[id] = ext.imdb_id || null; LS.set("fr-imdbid", imdbIds);
   return imdbIds[id];
 }
-const failsOmdb = o => !!o && ((f.gImdb > 0 && o.imdb != null && o.imdb < f.gImdb) || (f.gRt > 0 && o.rt != null && o.rt < f.gRt));
+const failsOmdb = o => !!o && ((f.gImdb > 0 && o.imdb != null && o.imdb < f.gImdb) || (f.gRt > 0 && o.rt != null && o.rt < f.gRt) || (f.gVotes > 0 && o.votes != null && o.votes < f.gVotes));
+const omdbFilterOn = () => f.gImdb > 0 || f.gRt > 0 || f.gVotes > 0;
 // Holt für jedes Plakat IMDb und RT, zeigt sie am Plakat und blendet aus, was unter deinen Reglern liegt
+// Plakate: bereits gespeicherte Werte sofort zeigen. Neue Abfragen nur, wenn ein IMDb-/RT-/Stimmen-Regler gesetzt ist
+// (sonst würde eine einzige Ansicht hunderte der 1.000 Tagesabfragen verbrauchen). Volle Werte gibt es beim Antippen.
 async function scoreTiles(container, my) {
   if (!container || !keys.omdb) return;
   const tiles = [...container.querySelectorAll(".tile")];
+  const live = omdbFilterOn();
   let i = 0;
   const worker = async () => {
     while (i < tiles.length) {
       const t = tiles[i++];
       if (my !== runId) return;
       try {
-        const o = await omdb(await imdbIdFor(+t.dataset.film));
+        const iid = await imdbIdFor(+t.dataset.film);
+        const o = live ? await omdb(iid) : omdbCached(iid);
         if (!o) continue;
         if (failsOmdb(o)) { t.remove(); continue; }
         const b = t.querySelector(".badge");
@@ -785,6 +877,7 @@ async function scoreTiles(container, my) {
     }
   };
   await Promise.all([worker(), worker(), worker(), worker()]);
+  chipsRender();
 }
 
 // ---------- Ansicht wechseln ----------
@@ -817,6 +910,8 @@ async function start() {
     genres = g.genres || [];
   } catch (e) {}
   chipsRender();
+  omdbBanner();
+  if (keys.omdb && (omdbState.bad || !LS.get("fr-omdbtested", false))) { LS.set("fr-omdbtested", true); omdbTest(); }
   setMode(mode);
 }
 
@@ -895,7 +990,7 @@ document.addEventListener("click", e => {
   if (t.id === "saveKeys") {
     keys = { tmdb: $("kTmdb").value.trim(), omdb: $("kOmdb").value.trim() };
     if (!keys.tmdb) { $("kTmdb").focus(); return; }
-    LS.set("fr-keys", keys); omdbCache = {}; LS.set("fr-omdb", {}); return start();
+    LS.set("fr-keys", keys); omdbState.bad = false; omdbState.limit = false; omdbSaveState(); LS.set("fr-omdbtested", false); return start();
   }
   if (t.id === "resetKeys") { $("kTmdb").value = keys.tmdb; $("kOmdb").value = keys.omdb; $("setup").hidden = false; $("setup").scrollIntoView(); return; }
   if (d.tmood) f.tMood = d.tmood;
@@ -919,6 +1014,8 @@ $("gImdb").addEventListener("input", e => { f.gImdb = +e.target.value; chipsRend
 $("gImdb").addEventListener("change", e => { f.gImdb = +e.target.value; saveFilter(); chipsRender(); setMode(mode); });
 $("gRt").addEventListener("input", e => { f.gRt = +e.target.value; chipsRender(); });
 $("gRt").addEventListener("change", e => { f.gRt = +e.target.value; saveFilter(); chipsRender(); setMode(mode); });
+$("gVotes").addEventListener("input", e => { f.gVotes = +e.target.value; chipsRender(); });
+$("gVotes").addEventListener("change", e => { f.gVotes = +e.target.value; saveFilter(); chipsRender(); setMode(mode); });
 $("gMin").addEventListener("change", e => { f.gMin = +e.target.value; saveFilter(); chipsRender(); setMode(mode); });
 $("restoreFile").addEventListener("change", e => { const file = e.target.files && e.target.files[0]; if (file) restoreBackup(file); e.target.value = ""; });
 $("fImdb").addEventListener("input", e => { f.imdb = +e.target.value; chipsRender(); saveFilter(); });
