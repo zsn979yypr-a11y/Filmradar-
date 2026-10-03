@@ -15,7 +15,7 @@ const LIEBLINGSFILME = [
 const GESEHEN = [
 ]
 
-const VERSION = "v5"
+const VERSION = "v6"
 const FILMRADAR_URL = "https://zsn979yypr-a11y.github.io/Filmradar-/"
 const MIN_IMDB_STANDARD = 7.0
 const CACHE_STUNDEN = 8
@@ -80,6 +80,7 @@ const diag = { favs: 0, kandidaten: 0, inDE: 0, zuNiedrig: 0, fehler: null, schl
 // OMDb sparsam: Werte 30 Tage merken, bei Tageslimit nicht weiterfragen
 const omdbSpeicher = lesen("filmradar-omdb.json") || {}
 let omdbGesperrt = false
+let omdbFehler = null
 async function omdb(imdbId, key) {
   const h = omdbSpeicher[imdbId]
   if (h && Date.now() - h.t < 30 * 864e5) return h
@@ -89,14 +90,14 @@ async function omdb(imdbId, key) {
     req.timeoutInterval = 15
     const j = await req.loadJSON()
     if (j.Response === "False") {
-      if (/limit|key/i.test(j.Error || "")) omdbGesperrt = true
+      if (/limit|key/i.test(j.Error || "")) { omdbGesperrt = true; omdbFehler = j.Error }
       return h || null
     }
     const rtE = (j.Ratings || []).find(x => (x.Source || "").includes("Rotten"))
     const v = { t: Date.now(), imdb: parseFloat(j.imdbRating) || null, rt: rtE ? parseInt(rtE.Value) : null }
     omdbSpeicher[imdbId] = v
     return v
-  } catch (e) { return h || null }
+  } catch (e) { omdbFehler = omdbFehler || (e.message || String(e)); return h || null }
 }
 
 function anbieterKurz(de) {
@@ -291,6 +292,25 @@ function kopfzeile(w, launeText, klein) {
   }
 }
 
+// Wertungen wie in der App: IMDb gelb, Rotten Tomatoes rot, TMDB grau (nur als Ersatz)
+const IMDB_GELB = new Color("#F5C518")
+const RT_ROT = new Color("#FF5A6E")
+function wertZeile(stapel, f, gr, wo) {
+  const z = stapel.addStack()
+  z.centerAlignContent()
+  const teil = (txt, farbe) => {
+    const t = z.addText(txt)
+    t.font = Font.boldSystemFont(gr); t.textColor = farbe; t.lineLimit = 1; t.minimumScaleFactor = 0.7
+    return t
+  }
+  const zahl = (x) => String(x.toFixed(1)).replace(".", ",")
+  if (f.quelle === "IMDb") teil(`IMDb ${zahl(f.wert)}`, IMDB_GELB)
+  else teil(`TMDB ${zahl(f.wert)}`, GRAU)
+  if (f.rt != null) { z.addSpacer(5); teil(`RT ${f.rt}%`, RT_ROT) }
+  if (wo) { z.addSpacer(5); teil(`· ${f.wo}`, GRAU) }
+  return z
+}
+
 function wertText(f) {
   return `★ ${String(f.wert.toFixed(1)).replace(".", ",")}${f.quelle === "TMDB" ? " TMDB" : ""}`
 }
@@ -337,8 +357,10 @@ async function widgetBauen(filme, launeText, meldung, familie) {
     w.addSpacer()
     const t = w.addText(f.titel)
     t.font = Font.heavySystemFont(15); t.textColor = WEISS; t.lineLimit = 2; t.minimumScaleFactor = 0.8
-    const u = w.addText(`${wertText(f)} · ${f.wo}`)
-    u.font = Font.semiboldSystemFont(11); u.textColor = GOLD; u.lineLimit = 1; u.minimumScaleFactor = 0.8
+    w.addSpacer(2)
+    wertZeile(w, f, 11, false)
+    const wo = w.addText(f.wo)
+    wo.font = Font.semiboldSystemFont(10); wo.textColor = GRAU; wo.lineLimit = 1; wo.minimumScaleFactor = 0.8
     return w
   }
 
@@ -369,8 +391,11 @@ async function widgetBauen(filme, launeText, meldung, familie) {
       karte.addSpacer(3)
       const t = karte.addText(f.titel)
       t.font = Font.boldSystemFont(10); t.textColor = WEISS; t.lineLimit = 1
-      const u = karte.addText(familie === "medium" ? wertText(f) : `${wertText(f)} · ${f.wo}`)
-      u.font = Font.semiboldSystemFont(9); u.textColor = GOLD; u.lineLimit = 1
+      wertZeile(karte, f, 9, false)
+      if (familie !== "medium") {
+        const wo = karte.addText(f.wo)
+        wo.font = Font.systemFont(9); wo.textColor = GRAU; wo.lineLimit = 1
+      }
       if (c < 2) reihe.addSpacer()
     }
     if (r < reihen - 1) w.addSpacer(8)
@@ -403,6 +428,7 @@ if (!tmdbKey || !omdbKey) {
 } else {
   const cache = lesen(cacheName)
   const frisch = cache && (Date.now() - cache.zeit) < CACHE_STUNDEN * 3600 * 1000 && cache.filme.every(f => f.poster)
+    && (cache.filme.every(f => f.quelle === "IMDb") || (Date.now() - cache.zeit) < 3600 * 1000)
   if (frisch) {
     filme = cache.filme
   } else {
@@ -449,10 +475,13 @@ if (config.runsInWidget) {
   else if (g === 1) await v.presentMedium()
   else await v.presentLarge()
   // Kurzer Check, ob die Plakate geladen wurden
-  if (plakatFehler.length && filme.length) {
+  const probleme = []
+  if (plakatFehler.length && filme.length) probleme.push("Plakate: " + plakatFehler.slice(0, 3).join("\n"))
+  if (omdbFehler) probleme.push("IMDb/Rotten Tomatoes (OMDb): " + omdbFehler)
+  if (probleme.length) {
     const d = new Alert()
-    d.title = "Plakate: Problem"
-    d.message = plakatFehler.slice(0, 4).join("\n")
+    d.title = "Hinweis"
+    d.message = probleme.join("\n\n")
     d.addAction("OK")
     await d.present()
   }
