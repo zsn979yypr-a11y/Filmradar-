@@ -146,12 +146,11 @@ if (fam === "small") {
   w.addSpacer()
   ringe(w, 38, false)
 } else if (fam === "medium") {
-  w.setPadding(10, 12, 10, 12)
+  w.setPadding(8, 12, 8, 12)
   kopf(w, false)
-  w.addSpacer(2)
-  preis(w, 28)
-  w.addSpacer(6)
-  ringe(w, 46, true)
+  preis(w, 24)
+  w.addSpacer(4)
+  ringe(w, 40, true)
   w.addSpacer()
 } else {
   w.setPadding(16, 14, 16, 14)
